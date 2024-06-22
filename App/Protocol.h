@@ -43,10 +43,16 @@ inline constexpr uint32_t djb2(const uint8_t *buffer, uint32_t size,
 enum StatusCode : uint16_t {
     Invalid,
     Ok,
+	WrongMsgSize,
     NoSuchCommand,
     NoSuchDevice,
     HashBroken,
-    InvalidId
+    InvalidId,
+	LoadExtraSize,
+	LoadWrongPacket,
+	WaitLoad,
+	NoMemory,
+	WaitStartLoad,
 };
 
 #pragma pack(push, 2)

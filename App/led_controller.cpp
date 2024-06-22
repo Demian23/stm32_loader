@@ -1,5 +1,5 @@
 #include <FreeRTOS.h>
-#include <MsgManagerPacket.h>
+#include "SmpUtil.h"
 #include <array>
 #include <algorithm>
 #include <utility>
@@ -24,25 +24,19 @@ void StartLedController(void *argument)
 	// read from stream buffer in loop
 	// wait for signal, than run
 	smp::BufferedManagerLedTaskMsg msg{};
-	smp::BufferedAnswer answer{};
+	static smp::BufferedAnswer answer{};
 	xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
 	while(true){
 		auto receivedBytes = xStreamBufferReceive(ledBufferHandle, msg.buffer.begin(), msg.buffer.size(), portMAX_DELAY);
+		auto [startWordLocal, id, ledMsg] = msg.packet;
 		if(receivedBytes == msg.buffer.size()){
 			smp::StatusCode result {};
 			if(msg.packet.msg.ledDevice != 0xF){
-				result = operateWithOneLed(msg.packet.msg.ledDevice, static_cast<smp::led_ops>(msg.packet.msg.op));
+				result = operateWithOneLed(ledMsg.ledDevice, static_cast<smp::led_ops>(ledMsg.op));
 			} else {
-				result = operateWithAllLed(static_cast<smp::led_ops>(msg.packet.msg.op));
+				result = operateWithAllLed(static_cast<smp::led_ops>(ledMsg.op));
 			}
-			answer.answer = {.header = {.startWord = msg.packet.startWord, .packetLength = static_cast<uint16_t>(answer.buffer.size()), .connectionId = msg.packet.requestId, .flags = 0x8000 + smp::action::peripheral}, .code = result};
-
-			auto hash = smp::djb2(answer.buffer.data(), smp::sizeBeforeHashField);
-			hash = smp::djb2(answer.buffer.data() + sizeof(smp::header), sizeof(smp::StatusCode), hash);
-			answer.answer.header.hash = hash;
-			while(HAL_OK != HAL_UART_Transmit_DMA(&huart1, answer.buffer.data(), answer.buffer.size())){
-				vTaskDelay(pdMS_TO_TICKS(100));
-			}
+			smp::sendAnswer(answer, startWordLocal, id, 0x8000 + smp::action::peripheral, result);
 		}
 	}
 }

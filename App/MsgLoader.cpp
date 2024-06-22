@@ -1,4 +1,5 @@
-#include <MsgLoader.h>
+#include "MsgLoader.h"
+#include "projdefs.h"
 #include <new>
 
 namespace smp {
@@ -20,9 +21,9 @@ MsgLoader::~MsgLoader() {
 
 MsgLoader::MsgLoader(MsgLoader &&other)
 	: acceptBuffer{other.acceptBuffer},
-	  msgSize{other.firmwareSize},
+	  msgSize{other.msgSize},
 	  currentPosition{other.currentPosition},
-	  lastProcessedId{lastProcessedId}
+	  lastProcessedId{other.lastProcessedId}
 {
 	other.acceptBuffer = nullptr;
 	other.msgSize= 0; other.currentPosition = 0; other.lastProcessedId = 0;
@@ -30,6 +31,26 @@ MsgLoader::MsgLoader(MsgLoader &&other)
 
 bool MsgLoader::loaded() const noexcept{
 	return currentPosition == msgSize;
+}
+
+
+bool MsgLoader::isValidPacket(LoadMsg msg)const noexcept
+{
+	return msg.msgHash == msgHash && msg.packetId == lastProcessedId + 1;
+}
+
+bool MsgLoader::getNextPacketFromStreamBuffer(StreamBufferHandle_t handle, uint32_t size) noexcept
+{
+	bool result = false;
+	if(size + currentPosition <= msgSize){
+		auto x2min = pdMS_TO_TICKS(120000);
+		auto received = xStreamBufferReceive(handle, acceptBuffer + currentPosition, size, x2min);
+		// if some data left in buffer check
+		if(received == size){ // or loop here?
+			result = true;
+		}
+	}
+	return result;
 }
 
 

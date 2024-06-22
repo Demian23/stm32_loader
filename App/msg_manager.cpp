@@ -1,49 +1,60 @@
 #include "Protocol.h"
 #include "usart.h"
 #include <FreeRTOS.h>
-#include <MsgManagerPacket.h>
+#include "SmpUtil.h"
 #include "task.h"
 #include "cmsis_os2.h"
 #include "stream_buffer.h"
 #include <algorithm>
 #include <atomic>
+#include <random>
 
-static uint16_t getFreeId();
-static void handshake();
-static uint16_t dispatch(uint8_t* buffer, size_t size);
+namespace {
 
-#ifdef __cplusplus
-extern "C"{
-#endif
+uint16_t getFreeId() noexcept;
+void handshake() noexcept;
+uint16_t dispatch(uint8_t* buffer, size_t size) noexcept;
+void goodbye(uint16_t id) noexcept;
+void peripheral(uint8_t* buffer) noexcept;
+bool hashValid(uint8_t* buffer) noexcept;
 
-extern osThreadId_t ledControllerHandle;
-extern osThreadId_t loaderHandle;
-
+void generateStartWord();
 
 constexpr uint16_t desirablePacketSize = 16 * 56;
 	// handshake credentials
 constexpr uint32_t handshakeStartWord = 0xAE711707;
-static constexpr std::array<uint8_t, 16> handshakeBuffer {
+constexpr std::array<uint8_t, 16> handshakeBuffer {
 	0xAE, 0x71, 0x17, 0x07,
 	0xAE, 0x71, 0x17, 0x07,
 	0xAE, 0x71, 0x17, 0x07,
 	0xAE, 0x71, 0x17, 0x07
 };
 
-static uint16_t ids{}; // 16 potential connections can be handled
-static uint32_t startWord{};
+uint16_t ids{}; // 16 potential connections can be handled
+uint32_t startWord{};
 
-//TODO correct size;
+
 constexpr uint32_t loaderMsgBufferSize = 512;
-constexpr uint32 processingBufferSize = 1024;
+constexpr uint32_t processingBufferSize = 1024;
 constexpr uint16_t defaultBufferSize = 0x2000;
+//TODO correct size;
 constexpr uint8_t ledBufferSize = sizeof(smp::ManagerLedTaskMsg);
+uint8_t ledBuffer[ledBufferSize + 2]{};
+StaticStreamBuffer_t ledStreamBuffer{};
 
-static uint8_t ledBuffer[ledBufferSize + 2]{};
-static StaticStreamBuffer_t ledStreamBuffer{};
+
+
+}
+
+#ifdef __cplusplus
+extern "C"{
+#endif
+
 StreamBufferHandle_t ledBufferHandle{};
 
 StreamBufferHandle_t loaderBufferHandle{};
+
+extern osThreadId_t ledControllerHandle;
 
 
 void StartMsgManager(void *argument)
@@ -52,11 +63,6 @@ void StartMsgManager(void *argument)
 	static std::array<uint8_t, processingBufferSize> processingBuffer;
 	uint16_t processingBufferSize {};
 
-	{
-		// TODO tick always the same
-		uint32_t newStartWordBase = handshakeStartWord + HAL_GetTick(); // overflow
-		startWord = smp::djb2(reinterpret_cast<uint8_t*>(&newStartWordBase), 4);
-	}
 
 	ledBufferHandle = xStreamBufferCreateStatic(ledBufferSize + 1, ledBufferSize, ledBuffer, &ledStreamBuffer); // TODO debug here size of buffer should be less on one byte according to docs, but smth was wrong
 	loaderBufferHandle = xStreamBufferCreate(loaderMsgBufferSize, 1);
@@ -85,9 +91,6 @@ void StartMsgManager(void *argument)
 
 			}
 		}
-		// TODO processing buffer can be "locked" by loader
-		// if we read 16 bytes and have id and so on
-		// we answer back that buffer busy
 		processingBufferSize += written;
 		writeIter = currentIter;
 		auto lastPos = dispatch(processingBuffer.begin(), processingBufferSize);
@@ -104,7 +107,9 @@ void StartMsgManager(void *argument)
 }
 #endif
 
-static uint16_t getFreeId()
+namespace {
+
+uint16_t getFreeId() noexcept
 {
 	if(ids == 0xFFFF)
 		return 0;
@@ -120,14 +125,17 @@ static uint16_t getFreeId()
 	}
 }
 
-static uint16_t dispatch(uint8_t* buffer, size_t size)
+uint16_t dispatch(uint8_t* buffer, size_t size) noexcept
 {
-	smp::BufferedAnswer packet{};
+	static smp::BufferedAnswer packet{};
 	size_t i = 0;
 	while(i < size)
 	{
 		if(size >= 16 && std::equal(buffer + i, buffer + i + handshakeBuffer.size(),
 				handshakeBuffer.cbegin(), handshakeBuffer.cend())){
+			if(startWord == 0){
+				generateStartWord();
+			}
 			handshake();
 			i += handshakeBuffer.size();
 			continue;
@@ -138,113 +146,49 @@ static uint16_t dispatch(uint8_t* buffer, size_t size)
 			smp::header* headerView= reinterpret_cast<smp::header*>(buffer + i);
 			uint16_t id = headerView->connectionId;
 
-			if(ids & id){
-				if(headerView->packetLength > size - i)
-					break;
-				auto msgSize = headerView->packetLength - sizeof(smp::header);
-			    auto hash = smp::djb2(buffer + i, smp::sizeBeforeHashField); // header before hash
-			    hash = smp::djb2(buffer + i + sizeof(smp::header), msgSize, hash);
-			    if(hash == headerView->hash){
-			    	switch(headerView->flags){
-			    	case smp::action::goodbye:
-						if(headerView->connectionId < 16){
-							uint8_t idValToMask = 1;
-							idValToMask <<= headerView->connectionId - 1;
-							ids &= ~idValToMask;
-						}
-						// TODO answer on goodbye?
-						break;
-			    	case smp::action::peripheral:
-			    	{
-			    		auto device = *reinterpret_cast<smp::peripheral_devices*>(buffer + i + sizeof(smp::header));
-			    		switch(device){
-			    		case smp::peripheral_devices::LED:{
-							const TickType_t sendTimeout = pdMS_TO_TICKS(50);
-							smp::BufferedManagerLedTaskMsg msg{};
-							auto userMsg = buffer + i + sizeof(smp::header) + sizeof(smp::peripheral_devices);
-							msg.packet = {.startWord = startWord, .requestId = static_cast<uint8_t>(id), .msg = *reinterpret_cast<smp::LedMsg*>(userMsg)};
-							auto bytesSent = xStreamBufferSend(ledBufferHandle, msg.buffer.data(), msg.buffer.size(), sendTimeout);
-			    			break;
-			    		}
-			    		default: break;
-			    		}
-			    		break;
-			    	}
-			    	case smp::action::load:{
-			    		if(loaderChannel.processed){
-			    			loaderChannel.processed = false;
-			    			loaderChannel.buffer = buffer + i;
-			    			loaderChannel.size = msgSize; // first 8 bytes -> packetId and whole message size
-							xTaskNotify(reinterpret_cast<TaskHandle_t>(loaderHandle), 0, eNoAction);
-
-			    		} else {
-							packet.answer = {
-								.header = {
-									.startWord = startWord,
-									.packetLength = static_cast<uint16_t>(packet.buffer.size()),
-									.connectionId = id,
-									.flags = static_cast<uint16_t>(0x8000 + headerView->flags)
-								},
-								.code = smp::StatusCode::PrevPacketProcessing
-							};
-							auto hash = smp::djb2(packet.buffer.data(), smp::sizeBeforeHashField);
-							hash = smp::djb2(packet.buffer.data() + sizeof(smp::header), sizeof(packet.answer.code), hash);
-							packet.answer.header.hash = hash;
-							while(HAL_OK != HAL_UART_Transmit_DMA(&huart1, packet.buffer.data(), packet.buffer.size())){
-								vTaskDelay(pdMS_TO_TICKS(100));
+			if((ids & id)){
+				if(headerView->packetLength <= size - i){
+					if(hashValid(buffer + i)){
+						switch(headerView->flags){
+						case smp::action::goodbye:
+							goodbye(headerView->connectionId);
+							break;
+						case smp::action::peripheral:
+							peripheral(buffer + i);
+							break;
+						case smp::action::startLoad:
+							if(headerView->packetLength == sizeof(smp::StartLoadHeader)){
+								// TODO ret val?
+								xStreamBufferSend(loaderBufferHandle, buffer + i, sizeof(smp::StartLoadHeader), pdMS_TO_TICKS(100));
+							} else {
+								smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::WrongMsgSize);
 							}
-			    		}
-			    		break;
-			    	}
+							break;
+						case smp::action::loading:
+							if(headerView->packetLength > sizeof(smp::LoadHeader) && headerView->packetLength <= desirablePacketSize){
+								xStreamBufferSend(loaderBufferHandle, buffer + i, headerView->packetLength, pdMS_TO_TICKS(100));
+							} else {
+								smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::WrongMsgSize);
+							}
+							break;
+						}
+					} else {
+						smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::HashBroken);
 					}
-			    } else {
-			    	packet.answer = {
-						.header = {
-							.startWord = startWord,
-							.packetLength = static_cast<uint16_t>(packet.buffer.size()),
-							.connectionId = id,
-							.flags = static_cast<uint16_t>(0x8000 + headerView->flags)
-						},
-						.code = smp::StatusCode::HashBroken
-			    	};
-
-			    	// TODO fix hash calculation in two projects: not 10 -> 12
-			    	auto hash = smp::djb2(packet.buffer.data(), smp::sizeBeforeHashField);
-			    	hash = smp::djb2(packet.buffer.data() + sizeof(smp::header), sizeof(packet.answer.code), hash);
-			    	packet.answer.header.hash = hash;
-			    	// TODO think how to write back better
-					while(HAL_OK != HAL_UART_Transmit_DMA(&huart1, packet.buffer.data(), packet.buffer.size())){
-						vTaskDelay(pdMS_TO_TICKS(100));
-					}
-			    }
-				i += headerView->packetLength;
+				} else {
+					break;
+				}
 			} else {
 				// send wrong id?
-				packet.answer = {
-					.header = {
-						.startWord = startWord,
-						.packetLength = static_cast<uint16_t>(packet.buffer.size()),
-						.connectionId = static_cast<uint8_t>(id),
-						.flags = static_cast<uint16_t>(0x8000 + headerView->flags)
-					},
-					.code = smp::StatusCode::InvalidId
-				};
-				auto hash = smp::djb2(packet.buffer.data(), smp::sizeBeforeHashField);
-				hash = smp::djb2(packet.buffer.data() + sizeof(smp::header), sizeof(packet.answer.code), hash);
-				packet.answer.header.hash = hash;
-				// TODO think how to write back better
-				while(HAL_OK != HAL_UART_Transmit_DMA(&huart1, packet.buffer.data(), packet.buffer.size())){
-					vTaskDelay(pdMS_TO_TICKS(100));
-				}
-				i += headerView->packetLength;
+				smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::InvalidId);
 			}
+			i += headerView->packetLength;
 		}
-		break;
 	}
 	return i;
 }
 
-static void handshake() noexcept
+void handshake() noexcept
 {
 	auto id = getFreeId();
 	if(id){
@@ -261,4 +205,45 @@ static void handshake() noexcept
 			vTaskDelay(pdMS_TO_TICKS(100));
 		}
 	}
+}
+
+void goodbye(uint16_t id) noexcept
+{
+	if(id < 16){
+		uint8_t idValToMask = 1;
+		idValToMask <<= id - 1;
+		ids &= ~idValToMask;
+	}
+}
+
+void peripheral(uint8_t* buffer)noexcept
+{
+	auto device = *reinterpret_cast<smp::peripheral_devices*>(buffer + sizeof(smp::header));
+	switch(device){
+	case smp::peripheral_devices::LED:{
+		smp::BufferedManagerLedTaskMsg msg{};
+		auto id = static_cast<uint8_t>(reinterpret_cast<smp::header*>(buffer)->connectionId);
+		auto ledMsg = *reinterpret_cast<smp::LedMsg*>(buffer + sizeof(smp::header) + sizeof(smp::peripheral_devices));
+		msg.packet = {.startWord = startWord, .requestId = id, .msg = ledMsg};
+		xStreamBufferSend(ledBufferHandle, msg.buffer.data(), msg.buffer.size(), pdMS_TO_TICKS(50));
+		break;
+	}
+	default: break;
+	}
+}
+
+bool hashValid(uint8_t* buffer) noexcept
+{
+	auto msgSize = reinterpret_cast<smp::header*>(buffer)->packetLength - sizeof(smp::header);
+	auto hash = smp::djb2(buffer, smp::sizeBeforeHashField); // header before hash
+	hash = smp::djb2(buffer + sizeof(smp::header), msgSize, hash);
+	return reinterpret_cast<smp::header*>(buffer)->hash == hash;
+}
+
+void generateStartWord()noexcept
+{
+	uint32_t newStartWordBase = static_cast<uint32_t>(handshakeStartWord + 1ULL + HAL_GetTick());
+	startWord = smp::djb2(reinterpret_cast<uint8_t*>(&newStartWordBase), 4);
+}
+
 }

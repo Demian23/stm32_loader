@@ -21,4 +21,6 @@ union BufferedManagerLedTaskMsg{
 
 };
 
+void sendAnswer(smp::BufferedAnswer& answer, uint32_t start, uint16_t id, uint16_t flags, smp::StatusCode code) noexcept;
+
 }
