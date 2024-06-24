@@ -18,9 +18,8 @@ void goodbye(uint16_t id) noexcept;
 void peripheral(uint8_t* buffer) noexcept;
 bool hashValid(uint8_t* buffer) noexcept;
 
-void generateStartWord();
+void generateStartWord() noexcept;
 
-constexpr uint16_t desirablePacketSize = 16 * 56;
 	// handshake credentials
 constexpr uint32_t handshakeStartWord = 0xAE711707;
 constexpr std::array<uint8_t, 16> handshakeBuffer {
@@ -34,15 +33,13 @@ uint16_t ids{}; // 16 potential connections can be handled
 uint32_t startWord{};
 
 
-constexpr uint32_t loaderMsgBufferSize = 512;
+constexpr uint32_t loaderMsgBufferSize = 16 * 56;
 constexpr uint32_t processingBufferSize = 1024;
-constexpr uint16_t defaultBufferSize = 0x2000;
+constexpr uint16_t defaultBufferSize = 2048;
 //TODO correct size;
 constexpr uint8_t ledBufferSize = sizeof(smp::ManagerLedTaskMsg);
 uint8_t ledBuffer[ledBufferSize + 2]{};
 StaticStreamBuffer_t ledStreamBuffer{};
-
-
 
 }
 
@@ -57,9 +54,9 @@ StreamBufferHandle_t loaderBufferHandle{};
 extern osThreadId_t ledControllerHandle;
 
 
-void StartMsgManager(void *argument)
+void StartMsgManager(void *argument) noexcept
 {
-	static std::array<uint8_t, defaultBufferSize> buffer; // static or on stack, what's better
+	static std::array<uint8_t, defaultBufferSize> buffer;
 	static std::array<uint8_t, processingBufferSize> processingBuffer;
 	uint16_t processingBufferSize {};
 
@@ -165,7 +162,7 @@ uint16_t dispatch(uint8_t* buffer, size_t size) noexcept
 							}
 							break;
 						case smp::action::loading:
-							if(headerView->packetLength > sizeof(smp::LoadHeader) && headerView->packetLength <= desirablePacketSize){
+							if(headerView->packetLength > sizeof(smp::LoadHeader) && headerView->packetLength <= loaderMsgBufferSize){
 								xStreamBufferSend(loaderBufferHandle, buffer + i, headerView->packetLength, pdMS_TO_TICKS(100));
 							} else {
 								smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::WrongMsgSize);
@@ -192,13 +189,13 @@ void handshake() noexcept
 {
 	auto id = getFreeId();
 	if(id){
-		constexpr auto bufferSize = handshakeBuffer.size() + sizeof(startWord) + sizeof(desirablePacketSize) + sizeof(id);
+		constexpr auto bufferSize = handshakeBuffer.size() + sizeof(startWord) + sizeof(loaderMsgBufferSize) + sizeof(id);
 		std::array<uint8_t, bufferSize> buffer{};
 		auto nextIter = std::copy(handshakeBuffer.cbegin(), handshakeBuffer.cend(), buffer.begin());
 		*reinterpret_cast<uint32_t*>(nextIter) = startWord;
 		nextIter += sizeof(startWord);
-		*reinterpret_cast<uint16_t*>(nextIter) = desirablePacketSize;
-		nextIter += sizeof(desirablePacketSize);
+		*reinterpret_cast<uint16_t*>(nextIter) = loaderMsgBufferSize;
+		nextIter += sizeof(loaderMsgBufferSize);
 		*reinterpret_cast<uint16_t*>(nextIter) = id;
 		// TODO fix this
 		while(HAL_OK != HAL_UART_Transmit_DMA(&huart1, buffer.cbegin(), buffer.size())){

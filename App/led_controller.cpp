@@ -12,14 +12,18 @@
 
 extern StreamBufferHandle_t ledBufferHandle;
 
-static smp::StatusCode operateWithOneLed(uint8_t ledNumber, smp::led_ops op) noexcept;
-static smp::StatusCode operateWithAllLed(smp::led_ops op) noexcept;
+namespace{
+
+smp::StatusCode operateWithOneLed(uint8_t ledNumber, smp::led_ops op) noexcept;
+smp::StatusCode operateWithAllLed(smp::led_ops op) noexcept;
+
+}
 
 #ifdef __cplusplus
 extern "C"{
 #endif
 
-void StartLedController(void *argument)
+void StartLedController(void *argument) noexcept
 {
 	// read from stream buffer in loop
 	// wait for signal, than run
@@ -45,12 +49,6 @@ void StartLedController(void *argument)
 }
 #endif
 
-static const std::array ledValues {
-	std::pair{LED1_GPIO_Port, LED1_Pin},
-	std::pair{LED2_GPIO_Port, LED2_Pin},
-	std::pair{LED3_GPIO_Port, LED3_Pin},
-	std::pair{LED4_GPIO_Port, LED4_Pin}
-};
 
 static smp::StatusCode ledOperation(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin, smp::led_ops op){
 	// TODO LED_Pin_All
@@ -70,7 +68,16 @@ static smp::StatusCode ledOperation(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin, smp:
 	return smp::Ok;
 }
 
-static smp::StatusCode operateWithOneLed(uint8_t ledNumber, smp::led_ops op) noexcept
+namespace{
+
+std::array ledValues {
+	std::pair{LED1_GPIO_Port, LED1_Pin},
+	std::pair{LED2_GPIO_Port, LED2_Pin},
+	std::pair{LED3_GPIO_Port, LED3_Pin},
+	std::pair{LED4_GPIO_Port, LED4_Pin}
+};
+
+smp::StatusCode operateWithOneLed(uint8_t ledNumber, smp::led_ops op) noexcept
 {
 	if(ledNumber <= ledValues.size() && ledNumber > 0){
 		auto [port, pin] = ledValues[ledNumber - 1];
@@ -80,12 +87,14 @@ static smp::StatusCode operateWithOneLed(uint8_t ledNumber, smp::led_ops op) noe
 	}
 }
 
-static smp::StatusCode operateWithAllLed(smp::led_ops op) noexcept
+smp::StatusCode operateWithAllLed(smp::led_ops op) noexcept
 {
 	smp::StatusCode result{};
 	std::for_each(ledValues.begin(), ledValues.end(), [&result, op](auto val){
 		result = ledOperation(val.first, val.second, op);
 	});
 	return result;
+}
+
 }
 

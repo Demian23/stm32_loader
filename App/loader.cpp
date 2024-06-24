@@ -19,7 +19,7 @@ extern "C"{
 extern StreamBufferHandle_t loaderBufferHandle;
 
 
-void StartLoader(void*)
+void StartLoader(void*) noexcept
 {
 	static smp::BufferedAnswer packet{};
 	while(true){

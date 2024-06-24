@@ -19,7 +19,7 @@ MsgLoader::~MsgLoader() {
 	}
 }
 
-MsgLoader::MsgLoader(MsgLoader &&other)
+MsgLoader::MsgLoader(MsgLoader &&other) noexcept
 	: acceptBuffer{other.acceptBuffer},
 	  msgSize{other.msgSize},
 	  currentPosition{other.currentPosition},
