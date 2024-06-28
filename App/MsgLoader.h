@@ -17,6 +17,9 @@ public:
 	explicit operator bool() const noexcept;
 	~MsgLoader();
 
+	const uint8_t* data()const noexcept;
+	uint32_t size() const noexcept;
+
 	MsgLoader(MsgLoader &&other) noexcept;
 
 	MsgLoader& operator=(MsgLoader &&other) noexcept = delete;

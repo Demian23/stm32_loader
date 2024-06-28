@@ -12,7 +12,8 @@ enum action : uint8_t {
     peripheral,
     startLoad,
     loading,
-    goodbye
+    goodbye,
+	boot
 };
 
 // on success send header only
@@ -53,6 +54,9 @@ enum StatusCode : uint16_t {
 	WaitLoad,
 	NoMemory,
 	WaitStartLoad,
+	DeviceBusy,
+	FailedWrite,
+	NothingToBoot
 };
 
 #pragma pack(push, 2)
@@ -93,12 +97,12 @@ union BufferedLedPacket {
 
 union BufferedLoadHeader {
     LoadHeader header;
-    std::array<uint8_t, sizeof(header)> buffer;
+    std::array<uint8_t, sizeof(LoadHeader)> buffer;
 };
 
 union BufferedStartLoadHeader{
     StartLoadHeader content;
-    std::array<uint8_t, sizeof(header)> buffer;
+    std::array<uint8_t, sizeof(content)> buffer;
 };
 
 #pragma pack(push,2)

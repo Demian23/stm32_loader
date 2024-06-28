@@ -8,6 +8,11 @@
 #include "task.h"
 #include "gpio.h"
 #include "SmpUtil.h"
+#include "FlashWriter.h"
+
+namespace {
+	smp::StatusCode flashResultCodeToSmpStatusCode(FlashWriter::ResCode code) noexcept;
+}
 
 #ifdef __cplusplus
 extern "C"{
@@ -35,8 +40,9 @@ void StartLoader(void*) noexcept
 			if(loader){
 				smp::BufferedLoadHeader headerReceiver{};
 				bool error = false;
+				smp::sendAnswer(packet, startWord,  id, flags, smp::StatusCode::Ok);
 				while(!loader.loaded() && !error){
-					auto x2min = pdMS_TO_TICKS(120000);
+					auto x2min = pdMS_TO_TICKS(10000);
 					received = xStreamBufferReceive(loaderBufferHandle, headerReceiver.buffer.data(), headerReceiver.buffer.size(), x2min);
 					// more complex check of header startWord, id
 					if(received != 0){
@@ -70,6 +76,9 @@ void StartLoader(void*) noexcept
 				}
 				if(!error){
 					// all loaded, ready for write to flash
+					FlashWriter writer{};
+					auto resCode = writer.write(loader.data(), loader.size());
+					smp::sendAnswer(packet, startWord, id, smp::action::loading, flashResultCodeToSmpStatusCode(resCode));
 				}
 			} else {
 				xStreamBufferReset(loaderBufferHandle);
@@ -89,3 +98,21 @@ void StartLoader(void*) noexcept
 }
 #endif
 
+namespace {
+
+smp::StatusCode flashResultCodeToSmpStatusCode(FlashWriter::ResCode code) noexcept
+{
+	switch(code){
+	case FlashWriter::ResCode::Ok:
+		return smp::StatusCode::Ok;
+	case FlashWriter::ResCode::CantWrite:
+		return smp::StatusCode::FailedWrite;
+	case FlashWriter::ResCode::FlashBusy:
+		return smp::StatusCode::DeviceBusy;
+	case FlashWriter::ResCode::ErasingMoreThanOneSector:
+		return smp::StatusCode::WrongMsgSize;
+	default: return smp::StatusCode::Invalid;
+	}
+}
+
+}

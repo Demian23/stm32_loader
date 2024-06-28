@@ -6,8 +6,7 @@
 #include "cmsis_os2.h"
 #include "stream_buffer.h"
 #include <algorithm>
-#include <atomic>
-#include <random>
+#include "FlashWriter.h"
 
 namespace {
 
@@ -17,6 +16,7 @@ uint16_t dispatch(uint8_t* buffer, size_t size) noexcept;
 void goodbye(uint16_t id) noexcept;
 void peripheral(uint8_t* buffer) noexcept;
 bool hashValid(uint8_t* buffer) noexcept;
+void boot()noexcept;
 
 void generateStartWord() noexcept;
 
@@ -30,10 +30,10 @@ constexpr std::array<uint8_t, 16> handshakeBuffer {
 };
 
 uint16_t ids{}; // 16 potential connections can be handled
-uint32_t startWord{};
+uint32_t startWord{42};
 
 
-constexpr uint32_t loaderMsgBufferSize = 16 * 56;
+constexpr uint16_t loaderMsgBufferSize = 16 * 56;
 constexpr uint32_t processingBufferSize = 1024;
 constexpr uint16_t defaultBufferSize = 2048;
 //TODO correct size;
@@ -52,6 +52,8 @@ StreamBufferHandle_t ledBufferHandle{};
 StreamBufferHandle_t loaderBufferHandle{};
 
 extern osThreadId_t ledControllerHandle;
+
+extern uint32_t _estack;
 
 
 void StartMsgManager(void *argument) noexcept
@@ -130,7 +132,7 @@ uint16_t dispatch(uint8_t* buffer, size_t size) noexcept
 	{
 		if(size >= 16 && std::equal(buffer + i, buffer + i + handshakeBuffer.size(),
 				handshakeBuffer.cbegin(), handshakeBuffer.cend())){
-			if(startWord == 0){
+			if(startWord == 42){
 				generateStartWord();
 			}
 			handshake();
@@ -158,28 +160,34 @@ uint16_t dispatch(uint8_t* buffer, size_t size) noexcept
 								// TODO ret val?
 								xStreamBufferSend(loaderBufferHandle, buffer + i, sizeof(smp::StartLoadHeader), pdMS_TO_TICKS(100));
 							} else {
-								smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::WrongMsgSize);
+								smp::sendAnswer(packet, startWord, id, headerView->flags, smp::StatusCode::WrongMsgSize);
 							}
 							break;
 						case smp::action::loading:
 							if(headerView->packetLength > sizeof(smp::LoadHeader) && headerView->packetLength <= loaderMsgBufferSize){
 								xStreamBufferSend(loaderBufferHandle, buffer + i, headerView->packetLength, pdMS_TO_TICKS(100));
 							} else {
-								smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::WrongMsgSize);
+								smp::sendAnswer(packet, startWord, id, headerView->flags, smp::StatusCode::WrongMsgSize);
 							}
+							break;
+						case smp::action::boot:
+							boot();
+							smp::sendAnswer(packet, startWord, id, headerView->flags, smp::StatusCode::NothingToBoot);
 							break;
 						}
 					} else {
-						smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::HashBroken);
+						smp::sendAnswer(packet, startWord, id, headerView->flags, smp::StatusCode::HashBroken);
 					}
 				} else {
 					break;
 				}
 			} else {
 				// send wrong id?
-				smp::sendAnswer(packet, startWord, id, headerView->flags + 0x8000, smp::StatusCode::InvalidId);
+				smp::sendAnswer(packet, startWord, id, headerView->flags, smp::StatusCode::InvalidId);
 			}
 			i += headerView->packetLength;
+		} else {
+			break;
 		}
 	}
 	return i;
@@ -189,17 +197,23 @@ void handshake() noexcept
 {
 	auto id = getFreeId();
 	if(id){
-		constexpr auto bufferSize = handshakeBuffer.size() + sizeof(startWord) + sizeof(loaderMsgBufferSize) + sizeof(id);
-		std::array<uint8_t, bufferSize> buffer{};
-		auto nextIter = std::copy(handshakeBuffer.cbegin(), handshakeBuffer.cend(), buffer.begin());
-		*reinterpret_cast<uint32_t*>(nextIter) = startWord;
-		nextIter += sizeof(startWord);
-		*reinterpret_cast<uint16_t*>(nextIter) = loaderMsgBufferSize;
-		nextIter += sizeof(loaderMsgBufferSize);
-		*reinterpret_cast<uint16_t*>(nextIter) = id;
-		// TODO fix this
-		while(HAL_OK != HAL_UART_Transmit_DMA(&huart1, buffer.cbegin(), buffer.size())){
-			vTaskDelay(pdMS_TO_TICKS(100));
+		static union{
+		        struct{
+		            std::array<uint8_t, handshakeBuffer.size()> header;
+		            uint32_t startWord;
+		            uint16_t packetSize;
+		            uint16_t id;
+		        }con;
+		        std::array<uint8_t, sizeof(con)> buffer;
+		    }packet;
+		    static_assert(sizeof(packet) == handshakeBuffer.size() + sizeof(uint32_t) + 2 * sizeof(uint16_t));
+
+		std::copy(handshakeBuffer.cbegin(), handshakeBuffer.cend(), packet.con.header.begin());
+		packet.con.startWord = startWord;
+		packet.con.packetSize = loaderMsgBufferSize;
+		packet.con.id = id;
+		while(HAL_OK != HAL_UART_Transmit_DMA(&huart1, packet.buffer.data(), packet.buffer.size())){
+			vTaskDelay(pdMS_TO_TICKS(300));
 		}
 	}
 }
@@ -241,6 +255,39 @@ void generateStartWord()noexcept
 {
 	uint32_t newStartWordBase = static_cast<uint32_t>(handshakeStartWord + 1ULL + HAL_GetTick());
 	startWord = smp::djb2(reinterpret_cast<uint8_t*>(&newStartWordBase), 4);
+}
+
+void boot()noexcept
+{
+	__disable_irq();
+
+	uint32_t stackStart = *reinterpret_cast<volatile uint32_t*>(FlashWriter::baseWriteAddress);
+
+	bool isStackInBorders = stackStart > 0x20000000 && stackStart <= 0x30000000;
+	if(isStackInBorders)
+	{
+		auto address = *reinterpret_cast<volatile uint32_t*>(FlashWriter::baseWriteAddress + 4);
+		static void(*app)(void) = *reinterpret_cast<void(*)(void)>(address); // after set msp stack invalid
+		HAL_RCC_DeInit();
+		HAL_DeInit();
+		__set_MSP(stackStart);
+#ifdef RESET_IN_CALLER
+	SCB->VTOR = 0x08020000UL;
+	asm("mov r0, #0x0");
+	asm("msr control, r0"); // move 0 into control ? just set priv and msp use?
+	asm("ISB"); //free pipeline
+	SysTick->CTRL = 0;
+	SysTick->LOAD = 0;
+	SysTick->VAL = 0;
+	__set_PRIMASK(0);
+	__set_BASEPRI(0);
+	__enable_irq();
+#endif
+
+		app();
+		HAL_NVIC_SystemReset();
+	}
+	__enable_irq();
 }
 
 }

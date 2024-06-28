@@ -40,7 +40,7 @@ void StartLedController(void *argument) noexcept
 			} else {
 				result = operateWithAllLed(static_cast<smp::led_ops>(ledMsg.op));
 			}
-			smp::sendAnswer(answer, startWordLocal, id, 0x8000 + smp::action::peripheral, result);
+			smp::sendAnswer(answer, startWordLocal, id, smp::action::peripheral, result);
 		}
 	}
 }

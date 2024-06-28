@@ -36,7 +36,7 @@ bool MsgLoader::loaded() const noexcept{
 
 bool MsgLoader::isValidPacket(LoadMsg msg)const noexcept
 {
-	return msg.msgHash == msgHash && msg.packetId == lastProcessedId + 1;
+	return msg.msgHash == msgHash && msg.packetId == lastProcessedId;
 }
 
 bool MsgLoader::getNextPacketFromStreamBuffer(StreamBufferHandle_t handle, uint32_t size) noexcept
@@ -48,10 +48,21 @@ bool MsgLoader::getNextPacketFromStreamBuffer(StreamBufferHandle_t handle, uint3
 		// if some data left in buffer check
 		if(received == size){ // or loop here?
 			result = true;
+			lastProcessedId++;
+			currentPosition += received;
 		}
 	}
 	return result;
 }
 
+const uint8_t* MsgLoader::data()const noexcept
+{
+	return acceptBuffer;
+}
+
+uint32_t MsgLoader::size() const noexcept
+{
+	return msgSize;
+}
 
 } /* namespace smp */
