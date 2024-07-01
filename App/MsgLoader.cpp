@@ -3,11 +3,21 @@
 #include <new>
 
 namespace smp {
+constexpr auto smallBufferSize = 16 * 56 - sizeof(smp::LoadHeader);
 
 MsgLoader::MsgLoader(uint32_t wholeSize, uint32_t msgHash)
-	: acceptBuffer{new (std::nothrow_t{}) uint8_t[wholeSize]},
-	  msgSize{wholeSize}, currentPosition{}, lastProcessedId{}, msgHash{msgHash}
-{}
+	:
+#ifdef PROVOKE_NO_MEMORY
+	acceptBuffer{nullptr},
+#else
+	acceptBuffer{new (std::nothrow_t{}) uint8_t[wholeSize]},
+#endif
+	  msgSize{wholeSize}, currentPosition{}, lastProcessedId{}, msgHash{msgHash}, allocatedAll{true}
+{
+	allocatedAll = acceptBuffer != nullptr;
+	acceptBuffer = new(std::nothrow_t{}) uint8_t[smallBufferSize];
+}
+bool MsgLoader::allAllocated() const noexcept{return allocatedAll;}
 
 MsgLoader::operator bool() const noexcept{
 	return acceptBuffer != nullptr;
@@ -42,15 +52,21 @@ bool MsgLoader::isValidPacket(LoadMsg msg)const noexcept
 bool MsgLoader::getNextPacketFromStreamBuffer(StreamBufferHandle_t handle, uint32_t size) noexcept
 {
 	bool result = false;
-	if(size + currentPosition <= msgSize){
-		auto x2min = pdMS_TO_TICKS(120000);
-		auto received = xStreamBufferReceive(handle, acceptBuffer + currentPosition, size, x2min);
-		// if some data left in buffer check
-		if(received == size){ // or loop here?
-			result = true;
-			lastProcessedId++;
-			currentPosition += received;
+	auto x2min = pdMS_TO_TICKS(120000);
+	size_t received = 0;
+	if(allocatedAll){
+		if(size + currentPosition <= msgSize){
+			received = xStreamBufferReceive(handle, acceptBuffer + currentPosition, size, x2min);
 		}
+	} else {
+		if(size <= smallBufferSize && size + currentPosition <= msgSize){
+			received = xStreamBufferReceive(handle, acceptBuffer, size, x2min);
+		}
+	}
+	if(received == size){ // or loop here?
+		result = true;
+		lastProcessedId++;
+		currentPosition += received;
 	}
 	return result;
 }
@@ -64,5 +80,6 @@ uint32_t MsgLoader::size() const noexcept
 {
 	return msgSize;
 }
+uint32_t MsgLoader::pos() const noexcept{return currentPosition;}
 
 } /* namespace smp */

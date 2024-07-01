@@ -39,46 +39,59 @@ void StartLoader(void*) noexcept
 			smp::MsgLoader loader{startHeader.content.msg.wholeMsgSize, startHeader.content.msg.wholeMsgHash};
 			if(loader){
 				smp::BufferedLoadHeader headerReceiver{};
-				bool error = false;
-				smp::sendAnswer(packet, startWord,  id, flags, smp::StatusCode::Ok);
-				while(!loader.loaded() && !error){
-					auto x2min = pdMS_TO_TICKS(10000);
-					received = xStreamBufferReceive(loaderBufferHandle, headerReceiver.buffer.data(), headerReceiver.buffer.size(), x2min);
-					// more complex check of header startWord, id
-					if(received != 0){
-						auto [startWord, packetLength, id, flags, hash] = headerReceiver.header.baseHeader;
-						if(received == headerReceiver.buffer.size() && flags == smp::action::loading){
-							if(loader.isValidPacket(headerReceiver.header.msg)){
-								auto msgSize = packetLength - headerReceiver.buffer.size();
-								if(loader.getNextPacketFromStreamBuffer(loaderBufferHandle, msgSize)){
-									smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::Ok);
+				FlashWriter writer{};
+				auto code = writer.erase();
+				if(code == FlashWriter::ResCode::Ok){
+					bool error = false;
+					smp::sendAnswer(packet, startWord,  id, flags, smp::StatusCode::Ok);
+					while(!loader.loaded() && !error){
+						auto x2min = pdMS_TO_TICKS(10000);
+						received = xStreamBufferReceive(loaderBufferHandle, headerReceiver.buffer.data(), headerReceiver.buffer.size(), x2min);
+						if(received != 0){
+							auto [startWord, packetLength, id, flags, hash] = headerReceiver.header.baseHeader;
+							if(received == headerReceiver.buffer.size() && flags == smp::action::loading){
+								if(loader.isValidPacket(headerReceiver.header.msg)){
+									auto msgSize = packetLength - headerReceiver.buffer.size();
+									if(loader.getNextPacketFromStreamBuffer(loaderBufferHandle, msgSize)){
+										if(!loader.allAllocated()){ // save in buffer
+											code = writer.write(loader, msgSize);
+											if(code != FlashWriter::ResCode::Ok){
+												xStreamBufferReset(loaderBufferHandle);
+												smp::sendAnswer(packet, startWord, id, flags, flashResultCodeToSmpStatusCode(code));
+												error = true;
+											}
+										}
+										if(!error)
+											smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::Ok);
+									} else {
+										xStreamBufferReset(loaderBufferHandle);
+										// fails only if waiting to receive or send not null
+										// in my architecture seems impossible
+										smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::LoadExtraSize);
+										error = true;
+									}
 								} else {
 									xStreamBufferReset(loaderBufferHandle);
-									// fails only if waiting to receive or send not null
-									// in my architecture seems impossible
-									smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::LoadExtraSize);
+									smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::LoadWrongPacket);
 									error = true;
 								}
 							} else {
 								xStreamBufferReset(loaderBufferHandle);
-								smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::LoadWrongPacket);
+								smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::WaitLoad);
 								error = true;
 							}
 						} else {
-							xStreamBufferReset(loaderBufferHandle);
-							smp::sendAnswer(packet, startWord, id, flags, smp::StatusCode::WaitLoad);
+							// timeout
 							error = true;
 						}
-					} else {
-						// timeout
-						error = true;
 					}
-				}
-				if(!error){
-					// all loaded, ready for write to flash
-					FlashWriter writer{};
-					auto resCode = writer.write(loader.data(), loader.size());
-					smp::sendAnswer(packet, startWord, id, smp::action::loading, flashResultCodeToSmpStatusCode(resCode));
+					if(loader.allAllocated() && !error){
+						code = writer.write(loader.data(), loader.size());
+						smp::sendAnswer(packet, startWord, id, smp::action::loading, flashResultCodeToSmpStatusCode(code));
+					}
+				} else {
+					xStreamBufferReset(loaderBufferHandle);
+					smp::sendAnswer(packet, startWord, id, flags, flashResultCodeToSmpStatusCode(code));
 				}
 			} else {
 				xStreamBufferReset(loaderBufferHandle);

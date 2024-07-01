@@ -13,12 +13,14 @@ public:
 	smp::StatusCode copy() noexcept; // from packet, knowing protocol details
 	bool isValidPacket(LoadMsg msg)const noexcept;
 	bool loaded()const noexcept;
+	bool allAllocated() const noexcept;
 	bool getNextPacketFromStreamBuffer(StreamBufferHandle_t handle, uint32_t size) noexcept;
 	explicit operator bool() const noexcept;
 	~MsgLoader();
 
 	const uint8_t* data()const noexcept;
 	uint32_t size() const noexcept;
+	uint32_t pos() const noexcept;
 
 	MsgLoader(MsgLoader &&other) noexcept;
 
@@ -31,6 +33,7 @@ private:
 	uint32_t currentPosition;
 	uint32_t lastProcessedId;
 	uint32_t msgHash;
+	bool allocatedAll;
 };
 
 } /* namespace smp */
