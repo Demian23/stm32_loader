@@ -4,7 +4,6 @@
 #include "stream_buffer.h"
 #include <SmpUtil.h>
 #include "MsgLoader.h"
-#include <new>
 #include "task.h"
 #include "gpio.h"
 #include "SmpUtil.h"
@@ -88,7 +87,9 @@ void StartLoader(void*) noexcept
 					if(loader.allAllocated() && !error){
 						code = writer.write(loader.data(), loader.size());
 						smp::sendAnswer(packet, startWord, id, smp::action::loading, flashResultCodeToSmpStatusCode(code));
-					}
+					} else {
+						smp::sendAnswer(packet, startWord, id, smp::action::loading, smp::StatusCode::Ok);
+                    }
 				} else {
 					xStreamBufferReset(loaderBufferHandle);
 					smp::sendAnswer(packet, startWord, id, flags, flashResultCodeToSmpStatusCode(code));

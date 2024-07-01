@@ -63,7 +63,7 @@ FlashWriter::ResCode FlashWriter::write(const smp::MsgLoader& loader, uint32_t s
 		auto pos = loader.pos() - size;
 		for(uint32_t i = 0; i < size; i++){
 			auto res = HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, baseWriteAddress + pos + i, buffer[i]);
-			bool written = res == HAL_OK && *reinterpret_cast<uint8_t*>(baseWriteAddress + i) == buffer[i];
+			bool written = res == HAL_OK && *reinterpret_cast<uint8_t*>(baseWriteAddress + pos + i) == buffer[i];
 			if(!written){
 				result = ResCode::CantWrite;
 			}

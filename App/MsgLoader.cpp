@@ -14,8 +14,9 @@ MsgLoader::MsgLoader(uint32_t wholeSize, uint32_t msgHash)
 #endif
 	  msgSize{wholeSize}, currentPosition{}, lastProcessedId{}, msgHash{msgHash}, allocatedAll{true}
 {
-	allocatedAll = acceptBuffer != nullptr;
-	acceptBuffer = new(std::nothrow_t{}) uint8_t[smallBufferSize];
+    if(!(allocatedAll = acceptBuffer != nullptr)){
+        acceptBuffer = new(std::nothrow_t{}) uint8_t[smallBufferSize];
+    }
 }
 bool MsgLoader::allAllocated() const noexcept{return allocatedAll;}
 
